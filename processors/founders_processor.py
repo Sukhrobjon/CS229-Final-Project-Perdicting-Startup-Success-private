@@ -5,6 +5,7 @@ import glob
 from typing import Dict, Optional, List
 import time
 from datetime import datetime
+from statistics import mean, median
 from processors.base_processor import BaseProcessor
 from utils.config import Config
 from utils.rate_limiter import RateLimiter
@@ -12,37 +13,42 @@ from utils.rate_limiter import RateLimiter
 class FoundersProcessor(BaseProcessor):
     def __init__(self, api_key: str, batch_size: int = 1000):
         super().__init__(api_key, batch_size)
-        self.progress_interval = 500  # Show progress every 500 companies
-        self.rate_limiter = RateLimiter(max_requests=10000)  # Increased rate limit
+        self.progress_interval = 500
+        self.rate_limiter = RateLimiter(max_requests=10000)
+        self.session = requests.Session()
+        
+        # Progress tracking
+        self.progress_file = os.path.join(Config.OUTPUT_DIR, "founders_progress.json")
+        
+        # API tracking
         self.api_calls_made = 0
         self.successful_calls = 0
         self.failed_calls = 0
         self.had_errors = False
         
         # Buffer configuration
-        self.buffer_size = 50    # Companies in memory before append
-        self.chunk_size = 10000  # Companies per chunk file
-        self.buffer = {}         # Current companies in memory
-        self.total_founders = 0  # Track total founders found
+        self.buffer_size = 50
+        self.chunk_size = 10000
+        self.buffer = {}
+        
+        # Performance tracking
+        self.total_founders = 0
+        self.request_times = []
+        self.last_request_time = time.time()
+        self.session.headers.update(self.headers)  # Set headers once
 
     def get_founders(self, company_id: str) -> Optional[Dict]:
-        """Get company founders"""
+        """Get company founders - Optimized version"""
+        start_time = time.time()
         self.rate_limiter.wait_if_needed()
         
         url = f"https://data.api.aviato.co/company/{company_id}/founders"
-        params = {
-            "perPage": 100,  # Use maximum efficient page size
-            "page": 0
-        }
         
         try:
-            response = requests.get(url, headers=self.headers, params=params)
+            response = self.session.get(url, timeout=10)
+            request_time = time.time() - start_time
+            self.request_times.append(request_time)
             self.api_calls_made += 1
-            
-            if response.status_code == 429:  # Rate limit hit
-                print("Rate limit reached, waiting...")
-                time.sleep(int(response.headers.get('Retry-After', 5)))
-                return self.get_founders(company_id)
             
             if response.status_code == 200:
                 self.successful_calls += 1
@@ -50,20 +56,46 @@ class FoundersProcessor(BaseProcessor):
                 if data and 'founders' in data:
                     self.total_founders += len(data['founders'])
                 return data
+            elif response.status_code == 429:  # Rate limit hit
+                retry_after = int(response.headers.get('Retry-After', 1))
+                time.sleep(retry_after)
+                return self.get_founders(company_id)
             else:
                 self.failed_calls += 1
                 self.had_errors = True
-                print(f"Error fetching founders for {company_id}: {response.status_code}")
                 return None
                 
         except Exception as e:
             self.failed_calls += 1
             self.had_errors = True
-            print(f"Exception fetching founders for {company_id}: {str(e)}")
             return None
+
+    def get_performance_metrics(self) -> Dict:
+        """Calculate current performance metrics"""
+        if not self.request_times:
+            return {
+                "avg_request_time": 0,
+                "median_request_time": 0,
+                "min_request_time": 0,
+                "max_request_time": 0,
+                "current_rate": 0
+            }
+            
+        recent_times = self.request_times[-1000:]  # Look at last 1000 requests
+        avg_time = mean(recent_times)
+        
+        return {
+            "avg_request_time": avg_time,
+            "median_request_time": median(recent_times),
+            "min_request_time": min(recent_times),
+            "max_request_time": max(recent_times),
+            "current_rate": 60 / avg_time if avg_time > 0 else 0
+        }
 
     def save_progress(self, current_index: int, company_id: str):
         """Save current progress"""
+        metrics = self.get_performance_metrics()
+        
         progress = {
             "last_index": current_index,
             "last_company_id": company_id,
@@ -73,19 +105,18 @@ class FoundersProcessor(BaseProcessor):
             "failed_calls": self.failed_calls,
             "total_founders": self.total_founders,
             "had_errors": self.had_errors,
+            "performance_metrics": metrics,
             "last_updated": datetime.now().isoformat()
         }
         
-        progress_file = os.path.join(Config.OUTPUT_DIR, "founders_progress.json")
-        with open(progress_file, 'w') as f:
+        with open(self.progress_file, 'w') as f:
             json.dump(progress, f, indent=2)
 
     def load_progress(self) -> Dict:
         """Load previous progress"""
-        progress_file = os.path.join(Config.OUTPUT_DIR, "founders_progress.json")
-        if os.path.exists(progress_file):
+        if os.path.exists(self.progress_file):
             try:
-                with open(progress_file, 'r') as f:
+                with open(self.progress_file, 'r') as f:
                     progress = json.load(f)
                     self.api_calls_made = progress.get('api_calls_made', 0)
                     self.successful_calls = progress.get('successful_calls', 0)
@@ -109,7 +140,6 @@ class FoundersProcessor(BaseProcessor):
         temp_file = os.path.join(Config.OUTPUT_DIR, "founders_temp.json")
         
         try:
-            # Read existing data if file exists
             if os.path.exists(temp_file):
                 with open(temp_file, 'r') as f:
                     existing_data = json.load(f)
@@ -118,11 +148,10 @@ class FoundersProcessor(BaseProcessor):
             else:
                 data_to_save = self.buffer
 
-            # Write updated data
             with open(temp_file, 'w') as f:
                 json.dump(data_to_save, f, indent=2)
             
-            self.buffer = {}  # Clear buffer
+            self.buffer = {}
             
         except Exception as e:
             print(f"Error appending to temp file: {str(e)}")
@@ -144,11 +173,9 @@ class FoundersProcessor(BaseProcessor):
         final_data = {}
         
         try:
-            # First, check for chunk files (if we had >10k companies)
             chunk_pattern = os.path.join(Config.OUTPUT_DIR, "founders_chunk_*.json")
             chunk_files = sorted(glob.glob(chunk_pattern))
             
-            # Process chunk files if they exist
             if chunk_files:
                 print("\nMerging chunk files...")
                 for i, chunk_file in enumerate(chunk_files, 1):
@@ -156,37 +183,29 @@ class FoundersProcessor(BaseProcessor):
                     with open(chunk_file, 'r') as f:
                         chunk_data = json.load(f)
                         final_data.update(chunk_data)
-                    os.remove(chunk_file)  # Clean up chunk file
+                    os.remove(chunk_file)
             
-            # Check for temp file (for remaining companies or if total was <10k)
             temp_file = os.path.join(Config.OUTPUT_DIR, "founders_temp.json")
             if os.path.exists(temp_file):
                 with open(temp_file, 'r') as f:
                     temp_data = json.load(f)
                     final_data.update(temp_data)
-                os.remove(temp_file)  # Clean up temp file
+                os.remove(temp_file)
             
-            # Save final merged file
             final_file = os.path.join(Config.OUTPUT_DIR, Config.OUTPUT_FILES['founders'])
             with open(final_file, 'w') as f:
                 json.dump(final_data, f, indent=2)
             
-            print(f"\nAll data merged into: {final_file}")
-            print(f"Total companies in final file: {len(final_data)}")
+            print("\nFinal Output Summary:")
+            print("------------------------")
+            print(f"Output file: {final_file}")
+            print(f"Total companies: {len(final_data)}")
+            print(f"Total founders: {self.total_founders}")
+            print("------------------------")
             
         except Exception as e:
             print(f"Error during final merge: {str(e)}")
             self.had_errors = True
-
-    def get_all_founder_ids(self) -> List[str]:
-        """Extract all founder IDs from the collected data"""
-        founder_ids = set()  # Use set for efficiency
-        for company_data in self.data.values():
-            for founder in company_data.get('founders', []):
-                founder_id = founder.get('id')
-                if founder_id:
-                    founder_ids.add(founder_id)
-        return list(founder_ids)
 
     def process_companies(self, company_ids: List[str]):
         """Process list of companies for founders"""
@@ -215,47 +234,39 @@ class FoundersProcessor(BaseProcessor):
                         self.buffer[company_id] = founders_data
                         companies_processed += 1
                         
-                        # Append to temp file when buffer is full
                         if len(self.buffer) >= self.buffer_size:
                             self.append_buffer_to_temp()
-                            
-                        # Create new chunk file at 10k threshold
+                        
                         self.save_chunk_if_needed(companies_processed)
                         
-                        # Save progress periodically
                         if i % self.progress_interval == 0:
                             self.save_progress(i, company_id)
-                    
-                    # Show progress every 500 companies
-                    if i % self.progress_interval == 0:
-                        elapsed_time = time.time() - start_time
-                        avg_time_per_company = elapsed_time / (i - start_index)
-                        remaining_companies = total_companies - i
-                        estimated_remaining_time = remaining_companies * avg_time_per_company
-                        current_rate = self.api_calls_made / (elapsed_time / 60)
-                        
-                        print(f"\nProgress: {i}/{total_companies} ({(i/total_companies)*100:.1f}%)")
-                        print(f"API Calls: {self.api_calls_made} (Success: {self.successful_calls}, Failed: {self.failed_calls})")
-                        print(f"Total Founders Found: {self.total_founders}")
-                        print(f"Current Rate: {current_rate:.1f} calls/minute")
-                        print(f"Est. time remaining: {estimated_remaining_time/60:.1f} minutes")
+                            metrics = self.get_performance_metrics()
+                            
+                            elapsed_time = time.time() - start_time
+                            remaining_companies = total_companies - i
+                            estimated_remaining_time = (elapsed_time / i) * remaining_companies
+                            
+                            print(f"\nProgress: {i}/{total_companies} ({(i/total_companies)*100:.1f}%)")
+                            print(f"API Calls: {self.api_calls_made} (Success: {self.successful_calls}, Failed: {self.failed_calls})")
+                            print(f"Total Founders Found: {self.total_founders}")
+                            print(f"Current Rate: {metrics['current_rate']:.1f} calls/minute")
+                            print(f"Avg Request Time: {metrics['avg_request_time']:.3f} seconds")
+                            print(f"Est. time remaining: {estimated_remaining_time/60:.1f} minutes")
                     
                 except Exception as e:
                     print(f"Error processing company {company_id}: {str(e)}")
-                    self.save_progress(i, company_id)  # Save progress on error
+                    self.save_progress(i, company_id)
                     continue
 
-            # Save any remaining data in buffer
             if self.buffer:
                 self.append_buffer_to_temp()
 
-            # Merge all data into final file
             self.merge_final_data()
 
-            # Clear progress file after successful completion
-            progress_file = os.path.join(Config.OUTPUT_DIR, "founders_progress.json")
-            if os.path.exists(progress_file):
-                os.remove(progress_file)
+            # Remove progress file after successful completion
+            if os.path.exists(self.progress_file):
+                os.remove(self.progress_file)
 
         except KeyboardInterrupt:
             print("\nProcess interrupted by user")
@@ -268,14 +279,18 @@ class FoundersProcessor(BaseProcessor):
                 self.append_buffer_to_temp()
             self.save_progress(i, company_id)
         finally:
-            # Final summary
+            metrics = self.get_performance_metrics()
             elapsed_time = time.time() - start_time
+            
             print(f"\nFounders Processing Complete:")
             print("------------------------")
             print(f"Companies Processed: {self.successful_calls}/{total_companies}")
             print(f"API Calls: {self.api_calls_made} (Success: {self.successful_calls}, Failed: {self.failed_calls})")
             print(f"Total Founders Found: {self.total_founders}")
-            print(f"Total time: {elapsed_time/60:.1f} minutes")
-            print(f"Average rate: {self.api_calls_made/(elapsed_time/60):.1f} calls/minute")
+            print(f"Average Rate: {self.api_calls_made/(elapsed_time/60):.1f} calls/minute")
+            print(f"Best Rate Achieved: {metrics['current_rate']:.1f} calls/minute")
+            print(f"Average Request Time: {metrics['avg_request_time']:.3f} seconds")
+            print(f"Total Time: {elapsed_time/60:.1f} minutes")
             print(f"Status: {'Completed with errors' if self.had_errors else 'Clean'}")
+            print(f"Output File: {os.path.join(Config.OUTPUT_DIR, Config.OUTPUT_FILES['founders'])}")
             print("------------------------")
