@@ -30,7 +30,7 @@ class FundingRoundsProcessor(BaseProcessor):
         
         url = f"https://data.api.aviato.co/company/{company_id}/funding-rounds"
         params = {
-            "perPage": 100,  # Use maximum efficient page size
+            "perPage": 20,  # Use maximum efficient page size
             "page": 0
         }
         
@@ -90,6 +90,10 @@ class FundingRoundsProcessor(BaseProcessor):
             except Exception as e:
                 print(f"Error loading progress: {e}")
         return {}
+
+    def save_batch(self):
+        """Implementation of abstract method from BaseProcessor"""
+        self.append_buffer_to_temp()
 
     def append_buffer_to_temp(self):
         """Append current buffer to temp file"""
