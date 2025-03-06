@@ -1,4 +1,5 @@
 import json
+import os
 from typing import Dict, Any, Optional
 import requests
 import time
@@ -112,69 +113,72 @@ class SearchProcessor:
         print(f"\nStarting company search process for {target_companies} companies")
         self.load_progress()
         
-        companies_buffer = []
-        start_offset = self.total_processed
-
         try:
-            while self.total_processed < target_companies:
-                # Get batch of companies
-                dsl = self.get_search_dsl(len(companies_buffer))
-                response = self.search_companies(dsl)
-                
-                # Update total on first call
-                if self.total_available == 0:
-                    self.total_available = int(response.get('count', {}).get('value', 0))
-                    print(f"\nTotal available companies: {self.total_available}")
-
-                items = response.get('items', [])
-                if not items:
-                    break
-
-                companies_buffer.extend(items)
+            # First call to get total count and first batch
+            dsl = self.get_search_dsl(0)
+            dsl['limit'] = 250  # Get maximum allowed in first call
+            response = self.search_companies(dsl)
+            
+            self.total_available = int(response.get('count', {}).get('value', 0))
+            print(f"\nTotal available companies: {self.total_available}")
+            
+            # Process first batch
+            items = response.get('items', [])
+            if items:
+                filename, end_offset = self.file_manager.save_batch(items, 0)
+                self.total_processed = len(items)
                 self.last_company_name = items[-1].get('name')
+                print(f"\nProcessed first batch: {self.total_processed} companies")
+
+            # Process remaining in batches of 250
+            while self.total_processed < target_companies:
+                remaining = target_companies - self.total_processed
+                batch_size = min(250, remaining)
                 
-                # Save batch when buffer reaches or exceeds batch size
-                if len(companies_buffer) >= self.file_manager.batch_size:
-                    filename, end_offset = self.file_manager.save_batch(
-                        companies_buffer[:self.file_manager.batch_size],
-                        start_offset
-                    )
+                print(f"\nFetching next batch ({self.total_processed + 1} - {self.total_processed + batch_size})")
+                
+                dsl = self.get_search_dsl(self.total_processed)
+                dsl['limit'] = batch_size
+                
+                try:
+                    response = self.search_companies(dsl)
+                    items = response.get('items', [])
                     
-                    # Update counters
-                    self.total_processed += self.file_manager.batch_size
-                    companies_buffer = companies_buffer[self.file_manager.batch_size:]
-                    start_offset = end_offset
-                    
-                    # Save progress
-                    self.save_progress()
+                    if not items:
+                        print("No more companies available")
+                        break
+
+                    filename, end_offset = self.file_manager.save_batch(items, self.total_processed)
+                    self.total_processed += len(items)
+                    self.last_company_name = items[-1].get('name')
                     
                     # Progress update
-                    print(f"\nProgress: {self.total_processed}/{target_companies} "
+                    print(f"Progress: {self.total_processed}/{target_companies} "
                           f"({(self.total_processed/target_companies)*100:.1f}%)")
                     print(f"API calls made: {self.api_calls_made}")
+                    
+                    self.save_progress()
+                    time.sleep(1)  # Rate limiting
+                    
+                except KeyboardInterrupt:
+                    print("\nProcess interrupted by user. Saving progress...")
+                    self.save_progress()
+                    raise
+                except Exception as e:
+                    print(f"\nError processing batch: {str(e)}")
+                    self.save_progress()
+                    raise
 
-                time.sleep(1)  # Rate limiting
-
-            # Save any remaining companies
-            if companies_buffer:
-                self.file_manager.save_batch(companies_buffer, start_offset)
-                self.total_processed += len(companies_buffer)
-                self.save_progress()
-
-            # Merge all files if processing is complete
+            # Merge files if processing is complete
             if self.total_processed >= target_companies:
                 print("\nProcessing complete. Merging files...")
                 merged_file = self.file_manager.merge_files(target_companies)
                 print(f"Final merged file: {merged_file}")
 
+        except KeyboardInterrupt:
+            print("\nProcess interrupted by user")
         except Exception as e:
             print(f"\nError during processing: {str(e)}")
-            # Save progress and current buffer on error
-            if companies_buffer:
-                self.file_manager.save_batch(companies_buffer, start_offset)
-            self.save_progress()
-            raise
-
         finally:
             # Print final statistics
             print("\nSearch Processing Complete:")
@@ -182,5 +186,4 @@ class SearchProcessor:
             print(f"Total Companies Found: {self.total_available}")
             print(f"Total Companies Processed: {self.total_processed}")
             print(f"Total API Calls Made: {self.api_calls_made}")
-            print(f"Files Generated: {len(os.listdir(Config.OUTPUT_DIR))}")
             print("------------------------")

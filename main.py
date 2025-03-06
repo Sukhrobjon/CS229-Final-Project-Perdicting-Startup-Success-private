@@ -1,7 +1,7 @@
-import time
+import glob
 from typing import List, Dict, Callable
 import os
-
+import time
 from processors.search_processor import SearchProcessor
 from processors.company_processor import CompanyEnrichmentProcessor
 from processors.funding_processor import FundingRoundsProcessor
@@ -46,8 +46,7 @@ class ProcessorManager:
         print("\nStarting Company Search...")
         try:
             processor = SearchProcessor(Config.API_KEY)
-            results = processor.search_companies()
-            processor.save_results(results)
+            processor.process_companies(target_companies=1000)
             return True
         except Exception as e:
             print(f"Error during search: {str(e)}")
@@ -103,7 +102,20 @@ class ProcessorManager:
             print("Configuration validation failed")
             return
 
-        self.process_search()
+        print("\nHow many companies would you like to process?")
+        print("Default: 1000, Maximum: 500000")
+        try:
+            target = input("Enter number of companies (or press Enter for default): ").strip()
+            target_companies = int(target) if target else 1000
+            if target_companies > 500000:
+                print("Maximum limit is 500000 companies. Setting to maximum.")
+                target_companies = 500000
+        except ValueError:
+            print("Invalid input. Using default value of 1000.")
+            target_companies = 1000
+
+        processor = SearchProcessor(Config.API_KEY)
+        processor.process_companies(target_companies)
 
     def run_full_process(self):
         """Run the complete data collection process"""
@@ -114,13 +126,16 @@ class ProcessorManager:
         FileHandler.ensure_output_directory(Config.OUTPUT_DIR)
 
         # Check if we already have company data
-        if not os.path.exists(Config.COMPANIES_FILE):
+        merged_files = glob.glob(os.path.join(Config.OUTPUT_DIR, "companies_merged_*.json"))
+        if not merged_files:
             print("\nNo existing company data found. Running search first...")
             if not self.process_search():
                 print("Failed to get company IDs. Exiting.")
                 return
         else:
-            print(f"\nUsing existing company data from {Config.COMPANIES_FILE}")
+            latest_file = max(merged_files, key=os.path.getctime)
+            print(f"\nUsing existing company data from {latest_file}")
+            Config.COMPANIES_FILE = latest_file
 
         company_ids = FileHandler.read_company_ids_from_json(Config.COMPANIES_FILE)
         
