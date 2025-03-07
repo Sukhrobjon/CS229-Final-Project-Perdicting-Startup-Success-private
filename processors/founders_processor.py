@@ -14,7 +14,7 @@ class FoundersProcessor(BaseProcessor):
     def __init__(self, api_key: str, batch_size: int = 1000):
         super().__init__(api_key, batch_size)
         self.progress_interval = 500
-        self.rate_limiter = RateLimiter(max_requests=10000)
+        self.rate_limiter = RateLimiter(max_requests=1000)
         self.session = requests.Session()
         
         # Progress tracking

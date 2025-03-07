@@ -3,7 +3,7 @@ from typing import Dict
 from collections import deque
 
 class RateLimiter:
-    def __init__(self, max_requests: int = 10000, time_window: int = 60):
+    def __init__(self, max_requests: int = 1000, time_window: int = 60):
         """
         Initialize rate limiter
         Args:
