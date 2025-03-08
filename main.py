@@ -13,6 +13,7 @@ from processors.async_founders_processor import AsyncFoundersProcessor
 from processors.person_processor import PersonEnrichmentProcessor
 from utils.file_handler import FileHandler
 from utils.config import Config
+from processors.multi_key_founders_processor import MultiKeyFoundersProcessor 
 
 class ProcessorManager:
     def __init__(self):
@@ -36,6 +37,11 @@ class ProcessorManager:
                 'name': 'Founders (Async)',
                 'function': self.process_founders_async,
                 'description': 'Process founders data (Async version)'
+            },
+            '3m': {                                                           
+                'name': 'Founders (Multi-Key)',
+                'function': self.process_founders_multi_key,
+                'description': 'Process founders data using multiple API keys'
             },
             '4': {
                 'name': 'Person Enrichment',
@@ -93,6 +99,23 @@ class ProcessorManager:
             print(f"\nProcessor stopped by kill switch: {str(e)}")
         except Exception as e:
             print(f"\nError during founders processing: {str(e)}")
+
+
+    def process_founders_multi_key(self, company_ids: List[str]) -> None:
+        """Process founders data using multiple API keys"""
+        print("\nStarting Multi-Key Founders Processing...")
+        try:
+            # Get valid API keys
+            api_keys = Config.get_valid_api_keys()
+            if not api_keys:
+                print("Error: No valid API keys found")
+                return
+
+            print(f"Found {len(api_keys)} valid API keys")
+            processor = MultiKeyFoundersProcessor(api_keys)
+            asyncio.run(processor.process_companies(company_ids))
+        except Exception as e:
+            print(f"\nError during multi-key founders processing: {str(e)}")
 
     async def process_founders_async(self, company_ids: List[str]) -> None:
         """Process founders data using async version"""
@@ -192,7 +215,8 @@ class ProcessorManager:
                 self.list_processors()
                 print("\nOptions:")
                 print("1-4: Run test mode (1000 companies)")
-                print("3a: Run async founders processor (recommended)")
+                print("3a: Run async founders processor")
+                print("3m: Run multi-key founders processor (recommended)")
                 print("f1-f4: Run full process (all companies)")
                 print("r: Run new search")
                 print("b: Go back to main menu")
@@ -208,11 +232,11 @@ class ProcessorManager:
                         company_ids = FileHandler.read_company_ids_from_json(companies_file)
                         print(f"\nUpdated: Found {len(company_ids)} companies to process")
                     continue
-                elif choice in ['1', '2', '3', '3a', '4']:
+                elif choice in ['1', '2', '3', '3a', '3m', '4']:
                     # Test mode (1000 companies)
                     self.run_specific_processor(choice, company_ids, test_mode=True)
                     print("\nTest mode completed successfully!")
-                elif choice.startswith('f') and choice[1:] in ['1', '2', '3', '3a', '4']:
+                elif choice.startswith('f') and choice[1:] in ['1', '2', '3', '3a', '3m', '4']:
                     # Full mode (all companies)
                     processor_key = choice[1:]
                     self.run_specific_processor(processor_key, company_ids, test_mode=False)

@@ -1,13 +1,25 @@
+# /utils/config.py
+
 import os
 import glob
 from dotenv import load_dotenv
+from typing import List, Optional
 
 # Load environment variables from .env file
 load_dotenv()
 
 class Config:
-    # API Configuration
+    # Primary API Configuration (maintain existing for backward compatibility)
     API_KEY = os.getenv('AVIATO_API_KEY', 'default_key')
+    
+    # Multi-key Configuration
+    API_KEYS = [
+        os.getenv('AVIATO_API_KEY_1', API_KEY),  # Use primary key as first key if not specified
+        os.getenv('AVIATO_API_KEY_2', None),
+        os.getenv('AVIATO_API_KEY_3', None),
+        os.getenv('AVIATO_API_KEY_4', None)
+    ]
+    
     BASE_URL = "https://data.api.aviato.co"
     
     # API Endpoints
@@ -25,6 +37,7 @@ class Config:
 
     # Directory Configuration
     OUTPUT_DIR = "output"
+    MULTI_KEY_OUTPUT_DIR = "output/multi_key"  # New directory for multi-key processing
 
     # File Names
     COMPANIES_FILE = "companies.json"  # Search results file
@@ -36,6 +49,27 @@ class Config:
         'founders': "founders.json",
         'person_enrichment': "person_enrichment.json"
     }
+
+    @classmethod
+    def get_valid_api_keys(cls) -> List[str]:
+        """Get list of valid API keys"""
+        return [key for key in cls.API_KEYS if key and key != 'default_key']
+
+    @classmethod
+    def validate_multi_key_config(cls) -> bool:
+        """Validate configuration for multi-key processing"""
+        valid_keys = cls.get_valid_api_keys()
+        
+        if not valid_keys:
+            print("Error: No valid API keys found for multi-key processing")
+            return False
+            
+        print(f"\nFound {len(valid_keys)} valid API keys for processing")
+        
+        # Ensure multi-key output directory exists
+        os.makedirs(cls.MULTI_KEY_OUTPUT_DIR, exist_ok=True)
+        
+        return True
 
     @classmethod
     def validate_config(cls, mode: str = 'full') -> bool:
