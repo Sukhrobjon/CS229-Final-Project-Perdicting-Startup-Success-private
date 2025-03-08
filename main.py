@@ -4,12 +4,14 @@ import glob
 from typing import List, Dict, Callable, Optional
 import os
 import time
+import asyncio
 from processors.search_processor import SearchProcessor
 from processors.company_processor import CompanyEnrichmentProcessor
 from processors.funding_processor import FundingRoundsProcessor
 from processors.founders_processor import FoundersProcessor
+from processors.async_founders_processor import AsyncFoundersProcessor
 from processors.person_processor import PersonEnrichmentProcessor
-from utils.file_handlers import FileHandler
+from utils.file_handler import FileHandler
 from utils.config import Config
 
 class ProcessorManager:
@@ -29,6 +31,11 @@ class ProcessorManager:
                 'name': 'Founders',
                 'function': self.process_founders,
                 'description': 'Process founders data'
+            },
+            '3a': {
+                'name': 'Founders (Async)',
+                'function': self.process_founders_async,
+                'description': 'Process founders data (Async version)'
             },
             '4': {
                 'name': 'Person Enrichment',
@@ -53,7 +60,7 @@ class ProcessorManager:
         except Exception as e:
             print(f"Error during search: {str(e)}")
             return False
-
+    
     def process_enrichment(self, company_ids: List[str]) -> None:
         """Process company enrichment data"""
         print("\nStarting Company Enrichment Processing...")
@@ -77,7 +84,7 @@ class ProcessorManager:
             print(f"\nError during funding processing: {str(e)}")
 
     def process_founders(self, company_ids: List[str]) -> None:
-        """Process founders data"""
+        """Process founders data using sync version"""
         print("\nStarting Founders Processing...")
         try:
             processor = FoundersProcessor(Config.API_KEY, Config.BATCH_SIZE)
@@ -86,6 +93,15 @@ class ProcessorManager:
             print(f"\nProcessor stopped by kill switch: {str(e)}")
         except Exception as e:
             print(f"\nError during founders processing: {str(e)}")
+
+    async def process_founders_async(self, company_ids: List[str]) -> None:
+        """Process founders data using async version"""
+        print("\nStarting Async Founders Processing...")
+        try:
+            processor = AsyncFoundersProcessor(Config.API_KEY, Config.BATCH_SIZE)
+            await processor.process_companies(company_ids)
+        except Exception as e:
+            print(f"\nError during async founders processing: {str(e)}")
 
     def process_person_enrichment(self, company_ids: List[str] = None) -> None:
         """Process person enrichment data"""
@@ -116,10 +132,17 @@ class ProcessorManager:
             if test_mode:
                 print(f"\nRunning {processor['name']} in TEST MODE (first 1000 companies)...")
                 test_ids = company_ids[:1000]
-                processor['function'](test_ids)
+                
+                if processor_key == '3a':  # Async Founders
+                    asyncio.run(processor['function'](test_ids))
+                else:
+                    processor['function'](test_ids)
             else:
                 print(f"\nRunning {processor['name']} in FULL MODE ({len(company_ids)} companies)...")
-                processor['function'](company_ids)
+                if processor_key == '3a':  # Async Founders
+                    asyncio.run(processor['function'](company_ids))
+                else:
+                    processor['function'](company_ids)
         else:
             print(f"Invalid processor key: {processor_key}")
 
@@ -169,6 +192,7 @@ class ProcessorManager:
                 self.list_processors()
                 print("\nOptions:")
                 print("1-4: Run test mode (1000 companies)")
+                print("3a: Run async founders processor (recommended)")
                 print("f1-f4: Run full process (all companies)")
                 print("r: Run new search")
                 print("b: Go back to main menu")
@@ -184,13 +208,13 @@ class ProcessorManager:
                         company_ids = FileHandler.read_company_ids_from_json(companies_file)
                         print(f"\nUpdated: Found {len(company_ids)} companies to process")
                     continue
-                elif choice in ['1', '2', '3', '4']:
+                elif choice in ['1', '2', '3', '3a', '4']:
                     # Test mode (1000 companies)
                     self.run_specific_processor(choice, company_ids, test_mode=True)
                     print("\nTest mode completed successfully!")
-                elif choice in ['f1', 'f2', 'f3', 'f4']:
+                elif choice.startswith('f') and choice[1:] in ['1', '2', '3', '3a', '4']:
                     # Full mode (all companies)
-                    processor_key = choice[1]  # Remove the 'f' prefix
+                    processor_key = choice[1:]
                     self.run_specific_processor(processor_key, company_ids, test_mode=False)
                     print("\nFull process completed successfully!")
                 else:
@@ -204,6 +228,7 @@ class ProcessorManager:
             print(f"\nAn error occurred during processing: {str(e)}")
         finally:
             print("\nProcessing finished.")
+
 
 def main():
     manager = ProcessorManager()
@@ -227,6 +252,7 @@ def main():
             manager.run_full_process()
         else:
             print("Invalid option. Please enter 'search', 'full', or 'exit'")
+
 
 if __name__ == "__main__":
     main()
