@@ -1,5 +1,7 @@
+# /main.py
+
 import glob
-from typing import List, Dict, Callable
+from typing import List, Dict, Callable, Optional
 import os
 import time
 from processors.search_processor import SearchProcessor
@@ -55,20 +57,35 @@ class ProcessorManager:
     def process_enrichment(self, company_ids: List[str]) -> None:
         """Process company enrichment data"""
         print("\nStarting Company Enrichment Processing...")
-        processor = CompanyEnrichmentProcessor(Config.API_KEY, Config.BATCH_SIZE)
-        processor.process_companies(company_ids)
+        try:
+            processor = CompanyEnrichmentProcessor(Config.API_KEY, Config.BATCH_SIZE)
+            processor.process_companies(company_ids)
+        except SystemExit as e:
+            print(f"\nProcessor stopped by kill switch: {str(e)}")
+        except Exception as e:
+            print(f"\nError during enrichment processing: {str(e)}")
 
     def process_funding(self, company_ids: List[str]) -> None:
         """Process funding rounds data"""
         print("\nStarting Funding Rounds Processing...")
-        processor = FundingRoundsProcessor(Config.API_KEY, Config.BATCH_SIZE)
-        processor.process_companies(company_ids)
+        try:
+            processor = FundingRoundsProcessor(Config.API_KEY, Config.BATCH_SIZE)
+            processor.process_companies(company_ids)
+        except SystemExit as e:
+            print(f"\nProcessor stopped by kill switch: {str(e)}")
+        except Exception as e:
+            print(f"\nError during funding processing: {str(e)}")
 
     def process_founders(self, company_ids: List[str]) -> None:
         """Process founders data"""
         print("\nStarting Founders Processing...")
-        processor = FoundersProcessor(Config.API_KEY, Config.BATCH_SIZE)
-        processor.process_companies(company_ids)
+        try:
+            processor = FoundersProcessor(Config.API_KEY, Config.BATCH_SIZE)
+            processor.process_companies(company_ids)
+        except SystemExit as e:
+            print(f"\nProcessor stopped by kill switch: {str(e)}")
+        except Exception as e:
+            print(f"\nError during founders processing: {str(e)}")
 
     def process_person_enrichment(self, company_ids: List[str] = None) -> None:
         """Process person enrichment data"""
@@ -79,20 +96,30 @@ class ProcessorManager:
             return
 
         print("\nStarting Person Enrichment Processing...")
-        person_ids = FileHandler.extract_person_ids_from_founders(founders_file)
-        
-        if person_ids:
-            processor = PersonEnrichmentProcessor(Config.API_KEY, Config.PERSON_BATCH_SIZE)
-            processor.process_person_ids(person_ids)
-        else:
-            print("No person IDs found to process.")
+        try:
+            person_ids = FileHandler.extract_person_ids_from_founders(founders_file)
+            
+            if person_ids:
+                processor = PersonEnrichmentProcessor(Config.API_KEY, Config.PERSON_BATCH_SIZE)
+                processor.process_person_ids(person_ids)
+            else:
+                print("No person IDs found to process.")
+        except SystemExit as e:
+            print(f"\nProcessor stopped by kill switch: {str(e)}")
+        except Exception as e:
+            print(f"\nError during person enrichment processing: {str(e)}")
 
-    def run_specific_processor(self, processor_key: str, company_ids: List[str]):
-        """Run a specific processor"""
+    def run_specific_processor(self, processor_key: str, company_ids: List[str], test_mode: bool = False):
+        """Run a specific processor with test mode support"""
         if processor_key in self.processors:
             processor = self.processors[processor_key]
-            print(f"\nRunning {processor['name']}...")
-            processor['function'](company_ids)
+            if test_mode:
+                print(f"\nRunning {processor['name']} in TEST MODE (first 1000 companies)...")
+                test_ids = company_ids[:1000]
+                processor['function'](test_ids)
+            else:
+                print(f"\nRunning {processor['name']} in FULL MODE ({len(company_ids)} companies)...")
+                processor['function'](company_ids)
         else:
             print(f"Invalid processor key: {processor_key}")
 
@@ -141,7 +168,8 @@ class ProcessorManager:
             while True:
                 self.list_processors()
                 print("\nOptions:")
-                print("1-4: Run specific processor")
+                print("1-4: Run test mode (1000 companies)")
+                print("f1-f4: Run full process (all companies)")
                 print("r: Run new search")
                 print("b: Go back to main menu")
                 
@@ -151,21 +179,26 @@ class ProcessorManager:
                     break
                 elif choice == 'r':
                     if self.process_search():
-                        # Refresh the config and company IDs after new search
                         Config.validate_config()
                         companies_file = os.path.join(Config.OUTPUT_DIR, Config.COMPANIES_FILE)
                         company_ids = FileHandler.read_company_ids_from_json(companies_file)
                         print(f"\nUpdated: Found {len(company_ids)} companies to process")
                     continue
-                elif choice in self.processors:
-                    self.run_specific_processor(choice, company_ids)
-                    print("\nProcessor completed successfully!")
-                    
-                    continue_choice = input("\nWould you like to run another processor? (y/n): ").lower()
-                    if continue_choice != 'y':
-                        break
+                elif choice in ['1', '2', '3', '4']:
+                    # Test mode (1000 companies)
+                    self.run_specific_processor(choice, company_ids, test_mode=True)
+                    print("\nTest mode completed successfully!")
+                elif choice in ['f1', 'f2', 'f3', 'f4']:
+                    # Full mode (all companies)
+                    processor_key = choice[1]  # Remove the 'f' prefix
+                    self.run_specific_processor(processor_key, company_ids, test_mode=False)
+                    print("\nFull process completed successfully!")
                 else:
                     print("Invalid selection. Please try again.")
+                
+                continue_choice = input("\nWould you like to run another processor? (y/n): ").lower()
+                if continue_choice != 'y':
+                    break
                 
         except Exception as e:
             print(f"\nAn error occurred during processing: {str(e)}")
@@ -176,9 +209,17 @@ def main():
     manager = ProcessorManager()
     
     while True:
-        run_mode = input("\nEnter 'search' for search only, 'full' for processor selection, or 'exit' to quit: ").lower()
+        print("\nData Processing Options:")
+        print("------------------------")
+        print("search: Run company search only")
+        print("full: Access all processors")
+        print("exit: Quit the program")
+        print("------------------------")
+        
+        run_mode = input("Enter your choice: ").lower()
         
         if run_mode == 'exit':
+            print("\nExiting program. Goodbye!")
             break
         elif run_mode == 'search':
             manager.run_search_only()

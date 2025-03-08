@@ -8,7 +8,8 @@ from datetime import datetime
 from statistics import mean, median
 from processors.base_processor import BaseProcessor
 from utils.config import Config
-from utils.rate_limiter import RateLimiter
+from utils.rate_limiter import EnhancedRateLimiter
+
 
 class PersonEnrichmentProcessor(BaseProcessor):
     def __init__(self, api_key: str, batch_size: int = 1000):
