@@ -2,15 +2,21 @@
 
 import asyncio
 import aiohttp
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional, Set, NamedTuple
+from collections import defaultdict, deque
 import time
 import json
 import os
-from datetime import datetime, timedelta
+from datetime import datetime
 import logging
-from collections import defaultdict, deque
 from utils.config import Config
 from utils.async_rate_limiter import AsyncRateLimiter
+
+class QueueConfig(NamedTuple):
+    name: str
+    concurrency: int
+    timeout: int
+    batch_size: int
 
 class AsyncFoundersProcessor:
     def __init__(self, api_key: str, batch_size: int = 1000):
@@ -18,8 +24,29 @@ class AsyncFoundersProcessor:
         self.batch_size = batch_size
         self.headers = {"Authorization": f"Bearer {api_key}"}
         
+        # Queue configurations
+        self.queues = {
+            'fast': QueueConfig('fast', concurrency=40, timeout=10, batch_size=400),
+            'medium': QueueConfig('medium', concurrency=20, timeout=15, batch_size=400),
+            'slow': QueueConfig('slow', concurrency=5, timeout=20, batch_size=200)
+        }
+        
+        # Queue tracking
+        self.queue_results = {
+            'fast': {'success': 0, 'failure': 0, 'credits_used': 0},
+            'medium': {'success': 0, 'failure': 0, 'credits_used': 0},
+            'slow': {'success': 0, 'failure': 0, 'credits_used': 0}
+        }
+        
+        # Failed IDs for each queue
+        self.failed_ids = {
+            'fast': set(),
+            'medium': set(),
+            'slow': set()
+        }
+        
         # Configuration
-        self.progress_interval = 500
+        self.progress_interval = 100  # Reduced for more frequent updates
         self.rate_limiter = AsyncRateLimiter(max_requests=150)
         
         # State tracking
@@ -28,417 +55,298 @@ class AsyncFoundersProcessor:
         self.failed_calls = 0
         self.buffer = {}
         self.start_time = time.time()
+        self.credits_used = 0
         
-        # Enhanced error tracking
+        # Error tracking
         self.error_tracking = {
-            'rate_limits': {
-                'count': 0,
-                'timestamps': [],
-                'retry_after_values': []
-            },
-            'timeouts': {
-                'count': 0,
-                'timestamps': [],
-                'response_times': []
-            },
-            'api_errors': defaultdict(lambda: {
-                'count': 0,
-                'timestamps': [],
-                'messages': []
-            })
+            'rate_limits': {'count': 0, 'timestamps': [], 'retry_after_values': []},
+            'timeouts': {'count': 0, 'timestamps': [], 'response_times': []},
+            'api_errors': defaultdict(lambda: {'count': 0, 'timestamps': [], 'messages': []})
         }
-        
-        # Analysis tracking
-        self.failure_analysis = {
-            'failed_companies': defaultdict(int),
-            'failure_timestamps': [],
-            'concurrent_stats': defaultdict(lambda: {'total': 0, 'failed': 0}),
-            'sequential_failures': 0,
-            'max_sequential_failures': 0,
-            'current_concurrent': 0,
-            'success_by_batch': [],
-            'rate_limit_intervals': [],  # Track time between rate limits
-            'response_times': [],        # Track successful response times
-        }
-        
-        # Keep track of in-flight requests
-        self.active_requests = set()
-        
-        # Track successful companies for comparison
-        self.successful_companies = set()
         
         # Setup logging
         self.setup_logging()
 
     def setup_logging(self):
-        """Set up logging with enhanced error tracking"""
+        """Set up logging with queue-specific tracking"""
         self.logger = logging.getLogger('async_founders_processor')
         self.logger.setLevel(logging.INFO)
         
         log_dir = os.path.join(Config.OUTPUT_DIR, 'logs')
         os.makedirs(log_dir, exist_ok=True)
         
-        # Add separate error log file
-        error_log = os.path.join(log_dir, f'async_founders_errors_{datetime.now().strftime("%Y%m%d_%H%M")}.log')
-        error_handler = logging.FileHandler(error_log)
-        error_handler.setLevel(logging.ERROR)
-        error_handler.setFormatter(logging.Formatter(
-            '%(asctime)s - %(levelname)s - %(message)s'
-        ))
-        self.logger.addHandler(error_handler)
-        
-        # Regular log file
-        log_file = os.path.join(log_dir, f'async_founders_processor_{datetime.now().strftime("%Y%m%d_%H%M")}.log')
-        handler = logging.FileHandler(log_file)
-        handler.setFormatter(logging.Formatter(
-            '%(asctime)s - %(levelname)s - %(message)s'
-        ))
-        self.logger.addHandler(handler)
+        # Add queue-specific log files
+        for queue_name in self.queues.keys():
+            queue_log = os.path.join(log_dir, f'queue_{queue_name}_{datetime.now().strftime("%Y%m%d_%H%M")}.log')
+            handler = logging.FileHandler(queue_log)
+            handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+            self.logger.addHandler(handler)
 
-    def track_rate_limit(self, retry_after: int, company_id: str):
-        """Track rate limit occurrence"""
-        now = datetime.now()
-        self.error_tracking['rate_limits']['count'] += 1
-        self.error_tracking['rate_limits']['timestamps'].append(now)
-        self.error_tracking['rate_limits']['retry_after_values'].append(retry_after)
+    def print_queue_stats(self, queue_name: str):
+        """Print statistics for a specific queue"""
+        stats = self.queue_results[queue_name]
+        total = stats['success'] + stats['failure']
+        success_rate = (stats['success'] / total * 100) if total > 0 else 0
         
-        # Track intervals between rate limits
-        if len(self.error_tracking['rate_limits']['timestamps']) > 1:
-            last_two = self.error_tracking['rate_limits']['timestamps'][-2:]
-            interval = (last_two[1] - last_two[0]).total_seconds()
-            self.failure_analysis['rate_limit_intervals'].append(interval)
-        
-        self.logger.warning(
-            f"Rate limit hit for company {company_id}. "
-            f"Retry-After: {retry_after}s. "
-            f"Total rate limits: {self.error_tracking['rate_limits']['count']}"
-        )
+        print(f"\n{queue_name.upper()} Queue Statistics:")
+        print(f"Success Rate: {success_rate:.1f}%")
+        print(f"Successful Calls: {stats['success']}")
+        print(f"Failed Calls: {stats['failure']}")
+        print(f"Credits Used: {stats['credits_used']}")
 
-    def track_timeout(self, company_id: str, response_time: float):
-        """Track timeout occurrence"""
-        now = datetime.now()
-        self.error_tracking['timeouts']['count'] += 1
-        self.error_tracking['timeouts']['timestamps'].append(now)
-        self.error_tracking['timeouts']['response_times'].append(response_time)
-        
-        self.logger.error(
-            f"Timeout for company {company_id}. "
-            f"Response time: {response_time:.2f}s. "
-            f"Total timeouts: {self.error_tracking['timeouts']['count']}"
-        )
+    def update_queue_stats(self, queue_name: str, success: bool):
+        """Update statistics for a queue"""
+        if success:
+            self.queue_results[queue_name]['success'] += 1
+        else:
+            self.queue_results[queue_name]['failure'] += 1
+        self.queue_results[queue_name]['credits_used'] += 1
     
-    async def get_founders(self, session: aiohttp.ClientSession, company_id: str) -> Optional[Dict]:
-        """Enhanced get_founders with detailed error tracking"""
-        # Track concurrent requests
-        self.failure_analysis['current_concurrent'] = len(self.active_requests)
-        self.active_requests.add(company_id)
-        request_start = time.time()
-        
-        # Configure timeouts
-        timeout = aiohttp.ClientTimeout(
-            total=30,     # Total timeout
-            connect=10,   # Connection timeout
-            sock_read=20  # Socket read timeout
-        )
-        
+    async def process_with_queue(self, session: aiohttp.ClientSession, company_id: str, 
+                               queue_config: QueueConfig) -> Optional[Dict]:
+        """Process a single company with queue-specific settings"""
         try:
             await self.rate_limiter.acquire()
+            
+            timeout = aiohttp.ClientTimeout(
+                total=queue_config.timeout,
+                connect=queue_config.timeout // 2,
+                sock_read=queue_config.timeout // 2
+            )
             
             url = f"https://data.api.aviato.co/company/{company_id}/founders"
             params = {"perPage": 100, "page": 0}
             
-            async with session.get(url, 
-                                 params=params, 
-                                 headers=self.headers, 
+            start_time = time.time()
+            
+            async with session.get(url, params=params, headers=self.headers, 
                                  timeout=timeout) as response:
-                
-                response_time = time.time() - request_start
-                self.failure_analysis['response_times'].append(response_time)
-                
-                # Track response for concurrency analysis
-                concurrent_count = len(self.active_requests)
-                self.failure_analysis['concurrent_stats'][concurrent_count]['total'] += 1
+                response_time = time.time() - start_time
                 
                 if response.status == 200:
                     data = await response.json()
                     self.successful_calls += 1
-                    self.successful_companies.add(company_id)
                     
                     if data and 'founders' in data:
                         self.total_founders += len(data['founders'])
                     
-                    # Reset sequential failures on success
-                    self.failure_analysis['sequential_failures'] = 0
-                    
+                    self.update_queue_stats(queue_config.name, success=True)
                     self.logger.info(
-                        f"Successfully processed company {company_id}. "
-                        f"Response time: {response_time:.2f}s. "
-                        f"Founders found: {len(data.get('founders', []))}"
+                        f"[{queue_config.name}] Success for {company_id}. "
+                        f"Response time: {response_time:.2f}s"
                     )
                     
                     return {company_id: data}
                     
                 elif response.status == 429:  # Rate limit
                     retry_after = int(response.headers.get('Retry-After', 60))
-                    self.track_rate_limit(retry_after, company_id)
+                    self.error_tracking['rate_limits']['count'] += 1
+                    self.error_tracking['rate_limits']['retry_after_values'].append(retry_after)
                     
-                    # If we get a rate limit, we'll wait and retry once
-                    await asyncio.sleep(retry_after)
-                    return await self.get_founders(session, company_id)
+                    self.logger.warning(
+                        f"[{queue_config.name}] Rate limit for {company_id}. "
+                        f"Retry-After: {retry_after}s"
+                    )
+                    
+                    # Move to slower queue
+                    self.failed_ids[queue_config.name].add(company_id)
+                    return None
                     
                 else:
                     self.failed_calls += 1
                     error_body = await response.text()
+                    self.error_tracking['api_errors'][str(response.status)]['count'] += 1
                     
-                    # Track specific API error
-                    error_key = str(response.status)
-                    self.error_tracking['api_errors'][error_key]['count'] += 1
-                    self.error_tracking['api_errors'][error_key]['timestamps'].append(datetime.now())
-                    self.error_tracking['api_errors'][error_key]['messages'].append(error_body[:200])
-                    
+                    self.update_queue_stats(queue_config.name, success=False)
                     self.logger.error(
-                        f"API Error for company {company_id}. "
-                        f"Status: {response.status}. "
-                        f"Response time: {response_time:.2f}s. "
+                        f"[{queue_config.name}] Error {response.status} for {company_id}. "
                         f"Response: {error_body[:200]}"
                     )
                     
+                    # Move to slower queue
+                    self.failed_ids[queue_config.name].add(company_id)
                     return None
                     
         except asyncio.TimeoutError:
-            response_time = time.time() - request_start
-            self.track_timeout(company_id, response_time)
             self.failed_calls += 1
+            self.error_tracking['timeouts']['count'] += 1
+            self.error_tracking['timeouts']['response_times'].append(queue_config.timeout)
+            
+            self.update_queue_stats(queue_config.name, success=False)
+            self.logger.error(f"[{queue_config.name}] Timeout for {company_id}")
+            
+            # Move to slower queue
+            self.failed_ids[queue_config.name].add(company_id)
             return None
             
         except Exception as e:
-            response_time = time.time() - request_start
             self.failed_calls += 1
-            
+            self.update_queue_stats(queue_config.name, success=False)
             self.logger.error(
-                f"Unexpected error for company {company_id}. "
-                f"Error: {str(e)}. "
-                f"Response time: {response_time:.2f}s"
+                f"[{queue_config.name}] Unexpected error for {company_id}: {str(e)}"
             )
             
+            # Move to slower queue
+            self.failed_ids[queue_config.name].add(company_id)
             return None
+
+    async def process_queue(self, session: aiohttp.ClientSession, 
+                          company_ids: List[str], queue_config: QueueConfig):
+        """Process a batch of companies with queue-specific concurrency"""
+        self.logger.info(
+            f"Processing {len(company_ids)} companies in {queue_config.name} queue "
+            f"with concurrency {queue_config.concurrency}"
+        )
+        
+        # Process in smaller chunks to maintain control
+        for i in range(0, len(company_ids), queue_config.batch_size):
+            batch = company_ids[i:i + queue_config.batch_size]
             
-        finally:
-            self.active_requests.remove(company_id)
+            # Create tasks with limited concurrency
+            semaphore = asyncio.Semaphore(queue_config.concurrency)
+            
+            async def process_with_semaphore(company_id: str):
+                async with semaphore:
+                    return await self.process_with_queue(session, company_id, queue_config)
+            
+            tasks = [process_with_semaphore(cid) for cid in batch]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            # Update buffer with successful results
+            for result in results:
+                if isinstance(result, dict):
+                    self.buffer.update(result)
+            
+            # Print progress
+            processed = i + len(batch)
+            if processed % self.progress_interval == 0:
+                self.print_queue_stats(queue_config.name)
+                print(f"Processed {processed}/{len(company_ids)} in {queue_config.name} queue")
 
-    async def process_batch(self, session: aiohttp.ClientSession, company_ids: List[str]):
-        """Process batch with enhanced error tracking"""
-        batch_start = time.time()
-        initial_success_count = self.successful_calls
-        
-        tasks = [self.get_founders(session, company_id) for company_id in company_ids]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        
-        # Analyze batch performance
-        batch_success = sum(1 for r in results if r is not None)
-        batch_duration = time.time() - batch_start
-        
-        self.failure_analysis['success_by_batch'].append({
-            'batch_size': len(company_ids),
-            'success_rate': batch_success / len(company_ids),
-            'concurrent_requests': len(self.active_requests),
-            'duration': batch_duration,
-            'rate_per_second': batch_success / batch_duration if batch_duration > 0 else 0
-        })
-        
-        for result in results:
-            if isinstance(result, dict):
-                self.buffer.update(result)
+    async def save_results(self):
+        """Save current results to file"""
+        if not self.buffer:
+            return
+            
+        output_file = os.path.join(Config.OUTPUT_DIR, Config.OUTPUT_FILES['founders'])
+        try:
+            with open(output_file, 'w') as f:
+                json.dump(self.buffer, f, indent=2)
+            self.logger.info(f"Saved {len(self.buffer)} results to {output_file}")
+        except Exception as e:
+            self.logger.error(f"Error saving results: {str(e)}")
 
-    def print_error_summary(self):
-        """Print detailed error summary"""
-        print("\nError Summary:")
-        print("-------------")
+    def print_final_summary(self):
+        """Print comprehensive summary of all queues"""
+        print("\nFinal Processing Summary:")
+        print("========================")
         
-        # Rate Limits
+        total_processed = 0
+        total_success = 0
+        total_credits = 0
+        
+        for queue_name, stats in self.queue_results.items():
+            total = stats['success'] + stats['failure']
+            success_rate = (stats['success'] / total * 100) if total > 0 else 0
+            total_processed += total
+            total_success += stats['success']
+            total_credits += stats['credits_used']
+            
+            print(f"\n{queue_name.upper()} Queue:")
+            print(f"Processed: {total}")
+            print(f"Success Rate: {success_rate:.1f}%")
+            print(f"Credits Used: {stats['credits_used']}")
+        
+        overall_success_rate = (total_success / total_processed * 100) if total_processed > 0 else 0
+        print("\nOverall Statistics:")
+        print(f"Total Processed: {total_processed}")
+        print(f"Total Successful: {total_success}")
+        print(f"Overall Success Rate: {overall_success_rate:.1f}%")
+        print(f"Total Credits Used: {total_credits}")
+        print(f"Total Founders Found: {self.total_founders}")
+        
+        # Print error summary
         if self.error_tracking['rate_limits']['count'] > 0:
-            print(f"Rate Limits: {self.error_tracking['rate_limits']['count']}")
-            if self.error_tracking['rate_limits']['retry_after_values']:
-                avg_retry = sum(self.error_tracking['rate_limits']['retry_after_values']) / len(self.error_tracking['rate_limits']['retry_after_values'])
-                print(f"Average Retry-After: {avg_retry:.1f}s")
-        
-        # Timeouts
+            print(f"\nRate Limits: {self.error_tracking['rate_limits']['count']}")
         if self.error_tracking['timeouts']['count'] > 0:
             print(f"Timeouts: {self.error_tracking['timeouts']['count']}")
-            if self.error_tracking['timeouts']['response_times']:
-                avg_timeout = sum(self.error_tracking['timeouts']['response_times']) / len(self.error_tracking['timeouts']['response_times'])
-                print(f"Average timeout response time: {avg_timeout:.1f}s")
-        
-        # API Errors
         for status, data in self.error_tracking['api_errors'].items():
             if data['count'] > 0:
-                print(f"API Error {status}: {data['count']} occurrences")
-                if data['messages']:
-                    print(f"Latest message: {data['messages'][-1]}")
-        
-        print("-------------")
-
-    def analyze_failures(self) -> Dict:
-        """Enhanced failure pattern analysis"""
-        analysis = {
-            'pattern_analysis': self._analyze_patterns(),
-            'concurrency_analysis': self._analyze_concurrency(),
-            'company_analysis': self._analyze_company_failures(),
-            'rate_limit_analysis': self._analyze_rate_limits(),
-            'performance_analysis': self._analyze_performance()
-        }
-        
-        return analysis
-
-    def _analyze_patterns(self) -> Dict:
-        """Analyze temporal patterns in failures"""
-        if not self.failure_analysis['failure_timestamps']:
-            return {
-                "time_distribution": {},
-                "max_sequential_failures": 0,
-                "total_failures": 0,
-                "failure_rate": 0.0
-            }
-            
-        timestamps = self.failure_analysis['failure_timestamps']
-        
-        # Analyze time-based patterns
-        time_patterns = defaultdict(int)
-        for ts in timestamps:
-            hour = ts.hour
-            if 5 <= hour < 12:
-                time_patterns['morning'] += 1
-            elif 12 <= hour < 17:
-                time_patterns['afternoon'] += 1
-            else:
-                time_patterns['evening'] += 1
-        
-        return {
-            "time_distribution": dict(time_patterns),
-            "max_sequential_failures": self.failure_analysis['max_sequential_failures'],
-            "total_failures": len(timestamps),
-            "failure_rate": len(timestamps) / (self.successful_calls + self.failed_calls)
-        }
-
-    def _analyze_rate_limits(self) -> Dict:
-        """Analyze rate limit patterns"""
-        rate_limits = self.error_tracking['rate_limits']
-        
-        analysis = {
-            "total_rate_limits": rate_limits['count'],
-            "average_retry_after": 0,
-            "rate_limit_frequency": 0,
-            "rate_limits_per_minute": 0
-        }
-        
-        if rate_limits['retry_after_values']:
-            analysis['average_retry_after'] = (
-                sum(rate_limits['retry_after_values']) / 
-                len(rate_limits['retry_after_values'])
-            )
-        
-        if len(rate_limits['timestamps']) > 1:
-            # Calculate average time between rate limits
-            intervals = self.failure_analysis['rate_limit_intervals']
-            if intervals:
-                analysis['rate_limit_frequency'] = sum(intervals) / len(intervals)
-            
-            # Calculate rate limits per minute
-            total_time = (rate_limits['timestamps'][-1] - rate_limits['timestamps'][0]).total_seconds()
-            if total_time > 0:
-                analysis['rate_limits_per_minute'] = (rate_limits['count'] * 60) / total_time
-        
-        return analysis
-
-    def _analyze_performance(self) -> Dict:
-        """Analyze performance metrics"""
-        response_times = self.failure_analysis['response_times']
-        
-        if not response_times:
-            return {
-                "average_response_time": 0,
-                "min_response_time": 0,
-                "max_response_time": 0,
-                "success_rate": 0
-            }
-        
-        return {
-            "average_response_time": sum(response_times) / len(response_times),
-            "min_response_time": min(response_times),
-            "max_response_time": max(response_times),
-            "success_rate": self.successful_calls / (self.successful_calls + self.failed_calls)
-        }
+                print(f"API Error {status}: {data['count']}")
 
     async def process_companies(self, company_ids: List[str]):
-        """Main processing function with enhanced analysis"""
+        """Main processing function using queue-based approach"""
         total_companies = len(company_ids)
         self.start_time = time.time()
         
-        print(f"\nProcessing {total_companies} companies...")
+        print(f"\nProcessing {total_companies} companies using queue-based approach...")
         
         try:
-            # Configure connection pooling
             connector = aiohttp.TCPConnector(
-                limit=50,              # Maximum number of concurrent connections
-                force_close=False,     # Keep connections alive
+                limit=None,  # Let semaphores handle concurrency
+                force_close=False,
                 enable_cleanup_closed=True
             )
             
             async with aiohttp.ClientSession(connector=connector) as session:
-                for i in range(0, total_companies, self.batch_size):
-                    batch = company_ids[i:i + self.batch_size]
-                    await self.process_batch(session, batch)
-                    
-                    if (i + len(batch)) % self.progress_interval == 0:
-                        elapsed = time.time() - self.start_time
-                        rate = (i + len(batch)) / elapsed
-                        print(f"\nProgress: {i + len(batch)}/{total_companies} "
-                              f"({((i + len(batch))/total_companies)*100:.1f}%)")
-                        print(f"Processing rate: {rate:.1f} companies/second")
-                        print(f"Total founders found: {self.total_founders}")
-                        print(f"Success rate: {self.successful_calls/(self.successful_calls + self.failed_calls)*100:.1f}%")
-                        self.print_error_summary()
+                # Process through fast queue
+                fast_queue = company_ids[:self.queues['fast'].batch_size]
+                await self.process_queue(session, fast_queue, self.queues['fast'])
                 
+                # Move failures and remaining companies to medium queue
+                medium_queue = list(self.failed_ids['fast'])
+                if len(company_ids) > self.queues['fast'].batch_size:
+                    medium_queue.extend(
+                        company_ids[self.queues['fast'].batch_size:
+                                  self.queues['fast'].batch_size + self.queues['medium'].batch_size]
+                    )
+                
+                if medium_queue:
+                    await self.process_queue(session, medium_queue, self.queues['medium'])
+                
+                # Move failures and remaining companies to slow queue
+                slow_queue = list(self.failed_ids['medium'])
+                remaining_start = self.queues['fast'].batch_size + self.queues['medium'].batch_size
+                if len(company_ids) > remaining_start:
+                    slow_queue.extend(company_ids[remaining_start:])
+                
+                if slow_queue:
+                    await self.process_queue(session, slow_queue, self.queues['slow'])
+                
+                # Save results
                 await self.save_results()
-            
-            elapsed = time.time() - self.start_time
-            print(f"\nProcessing completed in {elapsed/60:.1f} minutes")
-            print(f"Total companies processed: {self.successful_calls}")
-            print(f"Total founders found: {self.total_founders}")
-            print(f"Average rate: {total_companies/elapsed:.1f} companies/second")
-            
-            # Final analysis
-            print("\nAnalyzing failure patterns...")
-            analysis = self.analyze_failures()
-            
-            print("\nRate Limit Analysis:")
-            print("-------------------")
-            rate_limit_analysis = analysis['rate_limit_analysis']
-            print(f"Total rate limits: {rate_limit_analysis['total_rate_limits']}")
-            print(f"Average retry after: {rate_limit_analysis['average_retry_after']:.1f}s")
-            print(f"Rate limits per minute: {rate_limit_analysis['rate_limits_per_minute']:.1f}")
-            
-            print("\nPerformance Analysis:")
-            print("--------------------")
-            perf = analysis['performance_analysis']
-            print(f"Average response time: {perf['average_response_time']:.3f}s")
-            print(f"Min response time: {perf['min_response_time']:.3f}s")
-            print(f"Max response time: {perf['max_response_time']:.3f}s")
-            
-            # Save detailed analysis to file
-            analysis_file = os.path.join(Config.OUTPUT_DIR, "founders_analysis.json")
-            with open(analysis_file, 'w') as f:
-                json.dump(analysis, f, indent=2, default=str)
-            print(f"\nDetailed analysis saved to: {analysis_file}")
-            
+                
+                # Print final summary
+                elapsed = time.time() - self.start_time
+                self.print_final_summary()
+                print(f"\nTotal processing time: {elapsed/60:.1f} minutes")
+                
+                # Save detailed analysis
+                analysis = {
+                    'queue_results': self.queue_results,
+                    'error_tracking': self.error_tracking,
+                    'performance': {
+                        'total_time': elapsed,
+                        'companies_per_second': total_companies / elapsed,
+                        'total_founders': self.total_founders
+                    }
+                }
+                
+                analysis_file = os.path.join(
+                    Config.OUTPUT_DIR, 
+                    f"founders_analysis_{datetime.now().strftime('%Y%m%d_%H%M')}.json"
+                )
+                
+                with open(analysis_file, 'w') as f:
+                    json.dump(analysis, f, indent=2, default=str)
+                print(f"\nDetailed analysis saved to: {analysis_file}")
+                
         except KeyboardInterrupt:
             print("\nProcess interrupted by user")
             await self.save_results()
-            elapsed = time.time() - self.start_time
-            print(f"Processed {self.successful_calls} companies in {elapsed/60:.1f} minutes")
-            self.print_error_summary()
+            self.print_final_summary()
         except Exception as e:
             self.logger.error(f"Error during processing: {str(e)}")
             print(f"\nError during processing: {str(e)}")
             await self.save_results()
-            self.print_error_summary()
+            self.print_final_summary()
