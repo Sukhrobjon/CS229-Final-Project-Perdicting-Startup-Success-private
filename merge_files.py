@@ -17,8 +17,8 @@ def save_json_file(data, filename):
         json.dump(data, file, indent=2)
 
 # Load the files
-file1 = load_json_file('output/companies_merged_170000_20250307_2050.json')  # First search file
-file2 = load_json_file('output/companies_merged_1000_20250307_1918.json')  # Second search file
+file1 = load_json_file('companies_merged_chunk_7.json')  # First search file
+file2 = load_json_file('companies_merged_chunk_8.json')  # Second search file
 
 if not all([file1, file2]):
     print("Error loading one or more files")
@@ -58,7 +58,7 @@ output_data = {
 }
 
 # Save to new file
-save_json_file(output_data, 'companies_with_founders_non_empty.json')
+save_json_file(output_data, 'companies_merge_50k_chunk_5.json')
 
 print(f"Processing complete:")
 print(f"Total unique companies: {len(unique_companies)}")
