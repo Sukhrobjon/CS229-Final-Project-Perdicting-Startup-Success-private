@@ -77,42 +77,35 @@ class EnhancedRateLimiter:
                 print(f"Oldest request: {now - self.requests[0]:.3f} seconds ago")
                 print(f"Current rate: {len(self.requests)/self.time_window:.1f} requests/second")
         
-        # Clean old requests
-        old_size = len(self.requests)
+        # Clean old requests more efficiently
         while self.requests and self.requests[0] < now - self.time_window:
             self.requests.popleft()
-        new_size = len(self.requests)
-        
-        if self.debug and old_size != new_size:
-            print(f"Cleaned {old_size - new_size} old requests")
-        
-        # Calculate current rate
-        current_rate = len(self.requests) / self.time_window if self.requests else 0
-        
-        # If at max requests, wait
-        if len(self.requests) >= self.max_requests:
-            wait_time = self.requests[0] + self.time_window - now
             if self.debug:
-                print(f"At max requests. Need to wait: {wait_time:.3f} seconds")
-            if wait_time > 0:
-                time.sleep(wait_time)
-                now = time.time()
+                print("Cleaned old request")
         
         # Calculate minimum interval between requests
-        min_interval = self.time_window / self.max_requests
+        min_interval = self.time_window / self.max_requests  # Should be 1/150 ≈ 0.0067 seconds
         
-        # Ensure minimum interval between requests
+        # If we have recent requests, ensure minimum spacing
         if self.requests:
             elapsed = now - self.requests[-1]
             if elapsed < min_interval:
                 wait_time = min_interval - elapsed
                 if self.debug:
-                    print(f"Enforcing minimum interval. Waiting: {wait_time:.3f} seconds")
+                    print(f"Waiting {wait_time:.4f} seconds to maintain spacing")
+                time.sleep(wait_time)
+                now = time.time()
+        
+        # Only wait if we're actually at the limit
+        if len(self.requests) >= self.max_requests:
+            wait_time = self.requests[0] + self.time_window - now
+            if wait_time > 0:
+                if self.debug:
+                    print(f"At max requests, waiting {wait_time:.4f} seconds")
                 time.sleep(wait_time)
                 now = time.time()
         
         self.requests.append(now)
-        self.request_times.append(now)
         
         if self.debug:
             print(f"New rate: {len(self.requests)/self.time_window:.1f} requests/second")
