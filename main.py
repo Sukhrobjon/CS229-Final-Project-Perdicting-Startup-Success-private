@@ -125,19 +125,11 @@ class ProcessorManager:
 
         FileHandler.ensure_output_directory(Config.OUTPUT_DIR)
 
-        # Check if we already have company data
-        merged_files = glob.glob(os.path.join(Config.OUTPUT_DIR, "companies_merged_*.json"))
-        if not merged_files:
-            print("\nNo existing company data found. Running search first...")
-            if not self.process_search():
-                print("Failed to get company IDs. Exiting.")
-                return
-        else:
-            latest_file = max(merged_files, key=os.path.getctime)
-            print(f"\nUsing existing company data from {latest_file}")
-            Config.COMPANIES_FILE = latest_file
-
-        company_ids = FileHandler.read_company_ids_from_json(Config.COMPANIES_FILE)
+        # Get the company data file path
+        companies_file = os.path.join(Config.OUTPUT_DIR, Config.COMPANIES_FILE)
+        
+        print(f"\nReading company data from: {companies_file}")
+        company_ids = FileHandler.read_company_ids_from_json(companies_file)
         
         if not company_ids:
             print("No company IDs found to process. Exiting.")
@@ -159,7 +151,10 @@ class ProcessorManager:
                     break
                 elif choice == 'r':
                     if self.process_search():
-                        company_ids = FileHandler.read_company_ids_from_json(Config.COMPANIES_FILE)
+                        # Refresh the config and company IDs after new search
+                        Config.validate_config()
+                        companies_file = os.path.join(Config.OUTPUT_DIR, Config.COMPANIES_FILE)
+                        company_ids = FileHandler.read_company_ids_from_json(companies_file)
                         print(f"\nUpdated: Found {len(company_ids)} companies to process")
                     continue
                 elif choice in self.processors:

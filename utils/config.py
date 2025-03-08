@@ -1,4 +1,5 @@
 import os
+import glob
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
@@ -48,9 +49,19 @@ class Config:
             
         # Only check for input file in full mode
         if mode == 'full':
+            # Look for merged files first
+            merged_files = glob.glob(os.path.join(cls.OUTPUT_DIR, "companies_merged_*.json"))
+            if merged_files:
+                # Use the latest merged file
+                latest_file = max(merged_files, key=os.path.getctime)
+                cls.COMPANIES_FILE = os.path.basename(latest_file)
+                print(f"Using latest merged file: {cls.COMPANIES_FILE}")
+                return True
+                
+            # Fall back to default companies.json if no merged files found
             companies_file = os.path.join(cls.OUTPUT_DIR, cls.COMPANIES_FILE)
             if not os.path.exists(companies_file) and not os.path.exists(cls.COMPANIES_FILE):
-                print(f"Error: Companies file not found in either {companies_file} or {cls.COMPANIES_FILE}")
+                print(f"Error: No company data found. Please run search first.")
                 return False
-            
+        
         return True

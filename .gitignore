@@ -245,6 +245,8 @@ output/*.csv
 output/*.log
 companies.json
 *.log
+*.json
+*.csv
 
 # Python
 __pycache__/

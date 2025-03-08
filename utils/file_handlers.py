@@ -11,23 +11,27 @@ class FileHandler:
         try:
             with open(json_file_path, 'r') as f:
                 data = json.load(f)
-                # Handle both merged and unmerged file formats
+                
+                # Get companies from the correct location in the structure
                 companies = data.get('companies', [])
-                if not companies and 'items' in data:
-                    companies = data['items']
                 
-                # Use set to eliminate duplicates
+                # Extract unique IDs
                 unique_ids = {company['id'] for company in companies if 'id' in company}
-                
-                # Convert back to list
                 company_ids = list(unique_ids)
                 
                 total_companies = len(companies)
                 duplicates = total_companies - len(unique_ids)
                 
+                print(f"\nFile: {json_file_path}")
                 print(f"Total companies found: {total_companies}")
                 print(f"Duplicate IDs removed: {duplicates}")
                 print(f"Unique company IDs: {len(company_ids)}")
+                
+                # Print first few IDs for verification
+                if company_ids:
+                    print("\nFirst few company IDs:")
+                    for id in company_ids[:5]:
+                        print(f"- {id}")
                 
                 return company_ids
         except Exception as e:
