@@ -556,7 +556,7 @@ class CompanyEnrichmentProcessor(BaseProcessor):
             print(error_summary)
 
     def process_companies(self, company_ids: List[str]):
-        """Process list of companies with concurrent processing"""
+        """Process list of companies with concurrent processing and detailed progress tracking"""
         total_companies = len(company_ids)
         self.start_time = time.time()
         companies_processed = 0
@@ -574,6 +574,7 @@ class CompanyEnrichmentProcessor(BaseProcessor):
         
         self.logger.info(f"Starting Company Enrichment processing for {total_companies} companies...")
         print(f"\nStarting Company Enrichment processing for {total_companies} companies...")
+        print(f"Expected API credits needed: {total_companies}")
 
         try:
             # Process in batches of 1000 companies
@@ -617,12 +618,16 @@ class CompanyEnrichmentProcessor(BaseProcessor):
                         estimated_remaining_time = (elapsed_time / (current_index - start_index)) * remaining_companies if current_index > start_index else 0
                         
                         status = (
-                            f"\nProgress: {current_index}/{total_companies} "
-                            f"({(current_index/total_companies)*100:.1f}%)\n"
-                            f"Current Rate: {metrics['current_rate']:.1f} requests/second\n"
-                            f"Success Rate: {metrics['success_rate']:.2%}\n"
-                            f"Avg Request Time: {metrics['avg_request_time']:.3f} seconds\n"
-                            f"Est. time remaining: {estimated_remaining_time/60:.1f} minutes"
+                            f"\nProgress Report at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}:"
+                            f"\n----------------------------------------"
+                            f"\nProgress: {current_index}/{total_companies} ({(current_index/total_companies)*100:.1f}%)"
+                            f"\nCompanies Processed: {companies_processed}"
+                            f"\nCurrent Rate: {metrics['current_rate']:.1f} requests/second"
+                            f"\nSuccess Rate: {metrics['success_rate']:.2%}"
+                            f"\nAPI Calls: {self.api_calls_made} (Success: {self.successful_calls}, Failed: {self.failed_calls})"
+                            f"\nAvg Request Time: {metrics['avg_request_time']:.3f} seconds"
+                            f"\nEst. time remaining: {estimated_remaining_time/60:.1f} minutes"
+                            f"\n----------------------------------------"
                         )
                         
                         self.logger.info(status)
