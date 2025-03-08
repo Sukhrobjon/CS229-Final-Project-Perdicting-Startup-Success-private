@@ -4,16 +4,13 @@ import glob
 from typing import List, Dict, Callable, Optional
 import os
 import time
-import asyncio
 from processors.search_processor import SearchProcessor
 from processors.company_processor import CompanyEnrichmentProcessor
 from processors.funding_processor import FundingRoundsProcessor
 from processors.founders_processor import FoundersProcessor
-from processors.async_founders_processor import AsyncFoundersProcessor
 from processors.person_processor import PersonEnrichmentProcessor
 from utils.file_handler import FileHandler
 from utils.config import Config
-from processors.multi_key_founders_processor import MultiKeyFoundersProcessor 
 
 class ProcessorManager:
     def __init__(self):
@@ -31,17 +28,7 @@ class ProcessorManager:
             '3': {
                 'name': 'Founders',
                 'function': self.process_founders,
-                'description': 'Process founders data'
-            },
-            '3a': {
-                'name': 'Founders (Async)',
-                'function': self.process_founders_async,
-                'description': 'Process founders data (Async version)'
-            },
-            '3m': {                                                           
-                'name': 'Founders (Multi-Key)',
-                'function': self.process_founders_multi_key,
-                'description': 'Process founders data using multiple API keys'
+                'description': 'Process founders data (Optimized)'
             },
             '4': {
                 'name': 'Person Enrichment',
@@ -66,7 +53,6 @@ class ProcessorManager:
         except Exception as e:
             print(f"Error during search: {str(e)}")
             return False
-    
     def process_enrichment(self, company_ids: List[str]) -> None:
         """Process company enrichment data"""
         print("\nStarting Company Enrichment Processing...")
@@ -90,7 +76,7 @@ class ProcessorManager:
             print(f"\nError during funding processing: {str(e)}")
 
     def process_founders(self, company_ids: List[str]) -> None:
-        """Process founders data using sync version"""
+        """Process founders data with optimized settings"""
         print("\nStarting Founders Processing...")
         try:
             processor = FoundersProcessor(Config.API_KEY, Config.BATCH_SIZE)
@@ -99,32 +85,6 @@ class ProcessorManager:
             print(f"\nProcessor stopped by kill switch: {str(e)}")
         except Exception as e:
             print(f"\nError during founders processing: {str(e)}")
-
-
-    def process_founders_multi_key(self, company_ids: List[str]) -> None:
-        """Process founders data using multiple API keys"""
-        print("\nStarting Multi-Key Founders Processing...")
-        try:
-            # Get valid API keys
-            api_keys = Config.get_valid_api_keys()
-            if not api_keys:
-                print("Error: No valid API keys found")
-                return
-
-            print(f"Found {len(api_keys)} valid API keys")
-            processor = MultiKeyFoundersProcessor(api_keys)
-            asyncio.run(processor.process_companies(company_ids))
-        except Exception as e:
-            print(f"\nError during multi-key founders processing: {str(e)}")
-
-    async def process_founders_async(self, company_ids: List[str]) -> None:
-        """Process founders data using async version"""
-        print("\nStarting Async Founders Processing...")
-        try:
-            processor = AsyncFoundersProcessor(Config.API_KEY, Config.BATCH_SIZE)
-            await processor.process_companies(company_ids)
-        except Exception as e:
-            print(f"\nError during async founders processing: {str(e)}")
 
     def process_person_enrichment(self, company_ids: List[str] = None) -> None:
         """Process person enrichment data"""
@@ -153,19 +113,12 @@ class ProcessorManager:
         if processor_key in self.processors:
             processor = self.processors[processor_key]
             if test_mode:
-                print(f"\nRunning {processor['name']} in TEST MODE (first 1000 companies)...")
-                test_ids = company_ids[:1000]
-                
-                if processor_key == '3a':  # Async Founders
-                    asyncio.run(processor['function'](test_ids))
-                else:
-                    processor['function'](test_ids)
+                print(f"\nRunning {processor['name']} in TEST MODE (first 500 companies)...")
+                test_ids = company_ids[:500]
+                processor['function'](test_ids)
             else:
                 print(f"\nRunning {processor['name']} in FULL MODE ({len(company_ids)} companies)...")
-                if processor_key == '3a':  # Async Founders
-                    asyncio.run(processor['function'](company_ids))
-                else:
-                    processor['function'](company_ids)
+                processor['function'](company_ids)
         else:
             print(f"Invalid processor key: {processor_key}")
 
@@ -215,9 +168,8 @@ class ProcessorManager:
                 self.list_processors()
                 print("\nOptions:")
                 print("1-4: Run test mode (1000 companies)")
-                print("3a: Run async founders processor")
-                print("3m: Run multi-key founders processor (recommended)")
                 print("f1-f4: Run full process (all companies)")
+                print("t: Run specific processor in test mode")
                 print("r: Run new search")
                 print("b: Go back to main menu")
                 
@@ -232,11 +184,20 @@ class ProcessorManager:
                         company_ids = FileHandler.read_company_ids_from_json(companies_file)
                         print(f"\nUpdated: Found {len(company_ids)} companies to process")
                     continue
-                elif choice in ['1', '2', '3', '3a', '3m', '4']:
-                    # Test mode (1000 companies)
+                elif choice == 't':
+                    # Test mode with specific processor
+                    print("\nSelect processor for test mode (1-4):")
+                    test_choice = input("Enter processor number: ")
+                    if test_choice in self.processors:
+                        self.run_specific_processor(test_choice, company_ids, test_mode=True)
+                        print("\nTest mode completed successfully!")
+                    else:
+                        print("Invalid processor selection.")
+                elif choice in ['1', '2', '3', '4']:
+                    # Default to test mode for direct number selection
                     self.run_specific_processor(choice, company_ids, test_mode=True)
                     print("\nTest mode completed successfully!")
-                elif choice.startswith('f') and choice[1:] in ['1', '2', '3', '3a', '3m', '4']:
+                elif choice.startswith('f') and choice[1:] in ['1', '2', '3', '4']:
                     # Full mode (all companies)
                     processor_key = choice[1:]
                     self.run_specific_processor(processor_key, company_ids, test_mode=False)
@@ -280,3 +241,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    

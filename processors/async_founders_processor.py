@@ -115,7 +115,7 @@ class AsyncFoundersProcessor:
             )
             
             url = f"https://data.api.aviato.co/company/{company_id}/founders"
-            params = {"perPage": 100, "page": 0}
+            params = {"perPage": 20, "page": 0}
             
             start_time = time.time()
             

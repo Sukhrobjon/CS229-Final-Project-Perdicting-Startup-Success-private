@@ -8,7 +8,7 @@ import time
 from datetime import datetime
 from processors.base_processor import BaseProcessor
 from utils.config import Config
-from utils.rate_limiter import EnhancedRateLimiter
+from utils.rate_limiter import RateLimiter
 
 class SearchProcessor(BaseProcessor):
     def __init__(self, api_key: str, batch_size: int = 1000):

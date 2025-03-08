@@ -78,7 +78,7 @@ class MultiKeyFoundersProcessor:
         try:
             url = f"https://data.api.aviato.co/company/{company_id}/founders"
             headers = {"Authorization": f"Bearer {api_key}"}
-            params = {"perPage": 100, "page": 0}
+            params = {"perPage": 20, "page": 0}
             
             timeout = aiohttp.ClientTimeout(total=30)
             
