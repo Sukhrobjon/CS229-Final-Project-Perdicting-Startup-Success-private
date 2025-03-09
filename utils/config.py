@@ -37,10 +37,19 @@ class Config:
 
     # Directory Configuration
     OUTPUT_DIR = "output"
-    MULTI_KEY_OUTPUT_DIR = "output/multi_key"  # New directory for multi-key processing
+    MULTI_KEY_OUTPUT_DIR = "output/multi_key"
+    # NEW: Additional directory configurations for person enrichment
+    FOUNDERS_DIR = os.path.join(OUTPUT_DIR, "founders")
+    PERSON_DIR = os.path.join(OUTPUT_DIR, "person")
+    LOGS_DIR = os.path.join(OUTPUT_DIR, "logs")  # NEW: Explicit logs directory
 
     # File Names
-    COMPANIES_FILE = "companies.json"  # Search results file
+    COMPANIES_FILE = "companies.json"
+    # NEW: Founders data file for person enrichment
+    FOUNDERS_READY_FILE = "founders_data_ready_for_person_enrichment.json"
+
+    # NEW: Full paths for specific files
+    FOUNDERS_DATA_PATH = os.path.join(FOUNDERS_DIR, FOUNDERS_READY_FILE)
     
     # Output File Names
     OUTPUT_FILES = {
@@ -99,3 +108,36 @@ class Config:
                 return False
         
         return True
+
+    # NEW: Validation method for person enrichment
+    @classmethod
+    def validate_person_enrichment_config(cls) -> bool:
+        """Validate configuration for person enrichment processing"""
+        # Ensure all required directories exist
+        for directory in [cls.OUTPUT_DIR, cls.FOUNDERS_DIR, cls.PERSON_DIR, cls.LOGS_DIR]:
+            os.makedirs(directory, exist_ok=True)
+
+        # Check for founders data file
+        if not os.path.exists(cls.FOUNDERS_DATA_PATH):
+            print(f"Error: Founders data file not found at {cls.FOUNDERS_DATA_PATH}")
+            return False
+
+        # Validate API key
+        if cls.API_KEY == 'default_key':
+            print("Error: API key not found in environment variables")
+            return False
+
+        # Validate person enrichment endpoint
+        if 'person_enrich' not in cls.ENDPOINTS:
+            print("Error: Person enrichment endpoint not configured")
+            return False
+
+        print(f"\nConfiguration validated successfully")
+        print(f"Using founders data from: {cls.FOUNDERS_DATA_PATH}")
+        return True
+
+    # NEW: Helper method to get full output path
+    @classmethod
+    def get_output_path(cls, file_key: str) -> str:
+        """Get full path for output file"""
+        return os.path.join(cls.OUTPUT_DIR, cls.OUTPUT_FILES[file_key])

@@ -130,7 +130,7 @@ class RateLimiter:
                     fp = os.path.join(dirpath, f)
                     total_size += os.path.getsize(fp)
             
-            max_size = 500 * 1024 * 1024  # 500MB
+            max_size = 900 * 1024 * 1024  # 500MB
             is_critical = total_size > max_size
             
             if is_critical:

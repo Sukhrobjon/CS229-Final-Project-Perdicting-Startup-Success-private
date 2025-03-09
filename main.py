@@ -88,23 +88,20 @@ class ProcessorManager:
 
     def process_person_enrichment(self, company_ids: List[str] = None) -> None:
         """Process person enrichment data"""
-        founders_file = os.path.join(Config.OUTPUT_DIR, Config.OUTPUT_FILES['founders'])
-        
-        if not os.path.exists(founders_file):
-            print("Founders data not found. Skipping person enrichment.")
+        # Check for founders data in the correct location
+        if not os.path.exists(Config.FOUNDERS_DATA_PATH):
+            print(f"Founders data not found at: {Config.FOUNDERS_DATA_PATH}")
+            print("Please ensure founders data is available at this location before running person enrichment.")
             return
 
         print("\nStarting Person Enrichment Processing...")
         try:
-            person_ids = FileHandler.extract_person_ids_from_founders(founders_file)
-            
-            if person_ids:
-                processor = PersonEnrichmentProcessor(Config.API_KEY, Config.PERSON_BATCH_SIZE)
-                processor.process_person_ids(person_ids)
-            else:
-                print("No person IDs found to process.")
-        except SystemExit as e:
-            print(f"\nProcessor stopped by kill switch: {str(e)}")
+            processor = PersonEnrichmentProcessor(Config.API_KEY, Config.PERSON_BATCH_SIZE)
+            # Use the new process_founders_data method
+            processor.process_founders_data()
+        except FileNotFoundError as e:
+            print(f"\nError: {str(e)}")
+            print(f"Expected founders data at: {Config.FOUNDERS_DATA_PATH}")
         except Exception as e:
             print(f"\nError during person enrichment processing: {str(e)}")
 
