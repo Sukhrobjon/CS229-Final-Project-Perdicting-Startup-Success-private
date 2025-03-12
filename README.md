@@ -54,3 +54,4 @@ Generates:
 - Python 3.8+
 - See requirements.txt for dependencies
 ```
+id, fullName, headline, skills [], gender, experienceList

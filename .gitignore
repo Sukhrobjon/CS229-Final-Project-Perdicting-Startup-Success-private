@@ -240,13 +240,17 @@ env/
 .python-version
 
 # Output files
+output/
 output/*.json
 output/*.csv
 output/*.log
+output/*.parquet
 companies.json
 *.log
 *.json
 *.csv
+join_all_data.py
+/convert*.py
 
 # Python
 __pycache__/

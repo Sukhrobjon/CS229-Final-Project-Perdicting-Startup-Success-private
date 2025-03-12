@@ -11,7 +11,7 @@ from utils.config import Config
 class RateLimiter:
     def __init__(
         self,
-        max_requests: int = 20,    # Optimal medium setting
+        max_requests: int = 15,    # Increased from 10 to 15 TODO: bring it back to 20 for funding
         time_window: int = 1,      # 1 second window
         output_dir: str = Config.OUTPUT_DIR
     ):
@@ -36,13 +36,13 @@ class RateLimiter:
             'rate_limits': 0
         }
         
+        # Dynamic rate adjustment
+        self.avg_response_times = deque(maxlen=100)  # Track last 100 response times
+        self.min_requests = 15      # Minimum requests per second
+        self.max_allowed = 20      # Maximum allowed requests per second
+        
         # Setup logging
         self.setup_logging()
-        
-        self.logger.info(
-            f"Rate Limiter initialized with medium settings: "
-            f"{max_requests} requests per {time_window} second(s)"
-        )
 
     def setup_logging(self):
         """Set up logging"""
@@ -63,15 +63,26 @@ class RateLimiter:
         self.logger.addHandler(handler)
 
     def wait_if_needed(self) -> float:
-        """Optimized wait_if_needed with medium settings"""
+        """Optimized wait_if_needed with dynamic rate adjustment"""
         now = time.time()
         
         # Clean old requests
         while self.requests and self.requests[0] < now - self.time_window:
             self.requests.popleft()
         
+        # Calculate current rate
+        current_rate = len(self.requests)
+        
+        # Adjust max_requests based on average response time
+        if self.avg_response_times:
+            avg_response = sum(self.avg_response_times) / len(self.avg_response_times)
+            if avg_response < 0.5:  # If responses are fast
+                self.max_requests = min(self.max_requests + 1, self.max_allowed)
+            elif avg_response > 2.0:  # If responses are slow
+                self.max_requests = max(self.max_requests - 1, self.min_requests)
+        
         # If we have too many requests in the window, wait
-        if len(self.requests) >= self.max_requests:
+        if current_rate >= self.max_requests:
             wait_time = self.requests[0] + self.time_window - now
             if wait_time > 0:
                 time.sleep(wait_time)
@@ -83,13 +94,15 @@ class RateLimiter:
         
         return now
 
-    def record_result(self, success: bool, is_timeout: bool = False, 
-                     is_rate_limit: bool = False):
-        """Record request result"""
+    def record_result(self, success: bool, response_time: float = None, 
+                     is_timeout: bool = False, is_rate_limit: bool = False):
+        """Record request result with response time"""
         self.error_counts['total_requests'] += 1
         
         if success:
             self.error_counts['successful_requests'] += 1
+            if response_time is not None:
+                self.avg_response_times.append(response_time)
         else:
             self.error_counts['failed_requests'] += 1
             if is_timeout:
@@ -110,8 +123,9 @@ class RateLimiter:
         current_rate = self.get_current_rate()
         total_requests = self.error_counts['total_requests']
         
-        return {
+        stats = {
             'current_rate': current_rate,
+            'max_requests': self.max_requests,
             'error_counts': self.error_counts.copy(),
             'success_rate': (self.error_counts['successful_requests'] / 
                            max(total_requests, 1)),
@@ -120,53 +134,26 @@ class RateLimiter:
             'uptime': time.time() - self.start_time,
             'requests_in_window': len(self.requests)
         }
-
-    def check_disk_usage(self) -> Dict:
-        """Monitor disk usage in output directory"""
-        try:
-            total_size = 0
-            for dirpath, _, filenames in os.walk(self.output_dir):
-                for f in filenames:
-                    fp = os.path.join(dirpath, f)
-                    total_size += os.path.getsize(fp)
-            
-            max_size = 900 * 1024 * 1024  # 500MB
-            is_critical = total_size > max_size
-            
-            if is_critical:
-                self.logger.warning(f"Disk usage critical: {total_size / (1024*1024):.2f}MB")
-            
-            return {
-                'current_usage': total_size,
-                'max_allowed': max_size,
-                'is_critical': is_critical
-            }
-        except Exception as e:
-            self.logger.error(f"Error checking disk usage: {str(e)}")
-            return {
-                'error': str(e),
-                'is_critical': False
-            }
+        
+        if self.avg_response_times:
+            stats['avg_response_time'] = sum(self.avg_response_times) / len(self.avg_response_times)
+        
+        return stats
 
     def should_kill_process(self) -> tuple[bool, str]:
         """Check if process should be killed based on monitoring"""
-        # Check disk usage
-        disk_status = self.check_disk_usage()
-        if disk_status.get('is_critical'):
-            return True, "Disk usage exceeded 500MB limit"
-        
         # Check error rate (if we have enough data)
         if self.error_counts['total_requests'] >= 100:
             error_rate = (self.error_counts['failed_requests'] / 
                          self.error_counts['total_requests'])
-            if error_rate > 0.10:  # 10% error threshold
+            if error_rate > 0.20:  # 20% error threshold
                 return True, f"Error rate too high: {error_rate:.2%}"
         
         # Check timeout rate
         if self.error_counts['total_requests'] > 0:
             timeout_rate = (self.error_counts['timeouts'] / 
                           self.error_counts['total_requests'])
-            if timeout_rate > 0.05:  # 5% timeout threshold
+            if timeout_rate > 0.10:  # 10% timeout threshold (reduced from previous)
                 return True, f"Timeout rate too high: {timeout_rate:.2%}"
         
         return False, ""
