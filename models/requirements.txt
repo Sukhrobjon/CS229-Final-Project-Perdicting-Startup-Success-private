@@ -1,0 +1,11 @@
+pandas
+numpy
+scikit-learn
+xgboost
+matplotlib
+seaborn
+hyperopt
+shap
+tensorflow>=2.4.0
+keras-tuner
+eli5

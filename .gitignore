@@ -251,6 +251,11 @@ companies.json
 *.csv
 join_all_data.py
 /convert*.py
+models/data
+models/xgboost_optimized/experiments
+models/nn_three_layer/experiments_nn
+models/nn_three_layer/Miniforge3-MacOSX-arm64.sh
+file_converters
 
 # Python
 __pycache__/
